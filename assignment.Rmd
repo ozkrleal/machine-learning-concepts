@@ -1,6 +1,6 @@
 ---
 title: "Homework - DS2"
-author: "Oscar Leal 1903161 - Zsofi Vamos"
+author: "Oscar Leal 1903161 - Zsofi Vamos - CEU 2020"
 date: "2/17/2020"
 output: html_document
 ---
@@ -16,6 +16,9 @@ library(MASS)
 library(ISLR)
 library(caret)
 library(magrittr)
+library(tidyverse)
+library(ggplot2)
+library(GGally)
 
 ```
 
@@ -34,6 +37,27 @@ data <- data[complete.cases(data)]
 
 
 1- Do a short exploration of data and find possible predictors of the target variable.
+
+```{r}
+skimr::skim(data)
+glimpse(data)
+```
+
+
+```{r}
+ggplot(data = data, aes(x = TotalValue)) + geom_density()
+```
+
+```{r}
+ggplot(data = data, aes(x = logTotalValue)) + geom_density()
+```
+
+```{r}
+
+ggcorr(data)
+
+```
+
 
 2- Create a training and a test set, assigning 30% of observations to the training set.
 
