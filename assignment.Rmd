@@ -1,0 +1,50 @@
+---
+title: "Homework - DS2"
+author: "Oscar Leal 1903161 - Zsofi Vamos"
+date: "2/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE, include = FALSE}
+library(data.table)
+library(datasets)
+library(MASS)
+library(ISLR)
+library(caret)
+library(magrittr)
+
+```
+
+## Supervised learning with penalized models and PCA
+
+The goal will be to predict the logarithm of the property value: logTotalValue.
+
+```{r, echo = FALSE}
+# more info about the data here: https://www1.nyc.gov/site/planning/data-maps/open-data/dwn-pluto-mappluto.page
+data <- readRDS(url('http://www.jaredlander.com/data/manhattan_Train.rds')) %>% 
+  as.data.table()
+data[, logTotalValue := log(TotalValue)]
+data <- data[complete.cases(data)]
+
+```
+
+
+1- Do a short exploration of data and find possible predictors of the target variable.
+
+2- Create a training and a test set, assigning 30% of observations to the training set.
+
+3- Use a linear regression to predict logTotalValue and use 10-fold cross validation to assess the predictive power.
+
+4- Use penalized linear models for the same task. Make sure to try LASSO, Ridge and Elastic Net models. Does the best model improve on the simple linear model?
+
+5- Which of the models you’ve trained is the “simples one that is still good enough”? (Hint: explore adding selectionFunction = "oneSE" to the trainControl in caret’s train. What is its effect?).
+
+6- Now try to improve the linear model by using PCA for dimensionality reduction. Center and scale your variables and use pcr to conduct a search for the optimal number of principal components. Does PCA improve the fit over the simple linear model? (Hint: there are many factor variables. Make sure to include large number of principal components such as 60 - 90 to your search as well.)
+
+7- If you apply PCA prior to estimating penalized models via preProcess, does it help to achieve a better fit? (Hint: also include "nzv" to preProcess to drop zero variance features). What is your intuition why this can be the case?
+
+8- Select the best model of those you’ve trained. Evaluate your preferred model on the test set.
