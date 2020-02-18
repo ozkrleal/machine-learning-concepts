@@ -39,11 +39,19 @@ data[, logTotalValue := log(TotalValue)]
 #data[, logLotFront := log(LotFront)]
 #data[, logNumFloors := log(NumFloors)]
 
-#data <- data[BldgArea < 25000]
+data <- data[LotArea < 25000 & BldgArea < 25000]
 
-#skimr::skim(data)
+#skimr::skim(data[LotArea < 25000 & BldgArea < 25000])
+
+data <- data[, ZoneDist2 := NULL]
+data <- data[, ZoneDist3 := NULL]
+data <- data[, ZoneDist4 := NULL]
+data <- data[, LotType := NULL]
+
+
 
 data <- data[complete.cases(data)]
+
 
 ```
 
@@ -65,13 +73,11 @@ ggplot(data = data, aes(x = logTotalValue)) + geom_density()
 ```
 
 ```{r, warning=FALSE, message=FALSE}
-
 ggcorr(data)
-
 ```
 
 ```{r, message=FALSE}
-colnames(data)
+#colnames(data)
 ggpairs(data, columns = c("logTotalValue", "NumFloors", "BuiltFAR", "LotFront"))
 ```
 
@@ -125,7 +131,8 @@ fit_control <- trainControl(method = "cv", number = 10)
 
 ```{r}
 set.seed(857)
-linear_fit <- train(
+
+linear_fit_nose <- train(
   logTotalValue ~ . -TotalValue,
   data = data_train,
   method = "lm",
@@ -225,7 +232,7 @@ ridge_tune_grid <- expand.grid(
 )
 
 set.seed(857)
-ridge_fit <- train(
+ridge_fit_nose <- train(
   logTotalValue ~ . -TotalValue,
   data = data_train,
   method = "glmnet",
@@ -296,7 +303,7 @@ plot(lasso_model_cv)
 
 Fitting LASSO models with `caret` is similar to that of Ridge.
 ```{r, warning=FALSE}
-tenpowers <- 10^seq(-1, -5, by = -1)
+tenpowers <- 10^seq(-4, -7, by = -1)
 
 lasso_tune_grid <- expand.grid(
   "alpha" = c(1),
@@ -304,7 +311,7 @@ lasso_tune_grid <- expand.grid(
 )
 
 set.seed(857)
-lasso_fit <- train(
+lasso_fit_nose <- train(
   logTotalValue ~ . -TotalValue,
   data = data_train,
   method = "glmnet",
@@ -333,7 +340,7 @@ enet_tune_grid <- expand.grid(
 )
 
 set.seed(857)
-enet_fit <- train(
+enet_fit_nose <- train(
   logTotalValue ~ . -TotalValue,
   data = data_train,
   method = "glmnet",
@@ -356,7 +363,10 @@ resample_profile <- resamples(
   list("linear" = linear_fit,
        "ridge" = ridge_fit,
        "lasso" = lasso_fit,
-       "elastic net" = enet_fit
+       "elastic net" = enet_fit,
+       "linear_nose" = linear_fit_nose,
+       "lasso_nose" = lasso_fit_nose,
+       "elastic net_nose" = enet_fit_nose
   )
 ) 
 
@@ -384,15 +394,23 @@ dotplot(model_differences)
 ### Evaluate the chosen model on holdout set
 
 ```{r}
-RMSE(predict(enet_fit, newdata = data_test), data_test[["logTotalValue"]])
+RMSE(predict(linear_fit, newdata = data_test), data_test[["logTotalValue"]])
 
 ```
 
 
-
 5- Which of the models you’ve trained is the “simples one that is still good enough”? (Hint: explore adding selectionFunction = "oneSE" to the trainControl in caret’s train. What is its effect?).
 
+- The linear model was the best performing out of all. The parameter *oneSE* in selectionFunction if added, it chooses the simplest model within one standard error of the best performance to be the optimal model.
+
+EFFECT with oneSE: 
+  - In LASSO, the RMSEs' mean remained the **same**.
+  - In Elastic Net, the RMSEs' mean became **better**.
+  - In Linear Reg, the RMSEs' mean became **worse**.
+
 6- Now try to improve the linear model by using PCA for dimensionality reduction. Center and scale your variables and use pcr to conduct a search for the optimal number of principal components. Does PCA improve the fit over the simple linear model? (Hint: there are many factor variables. Make sure to include large number of principal components such as 60 - 90 to your search as well.)
+
+
 
 7- If you apply PCA prior to estimating penalized models via preProcess, does it help to achieve a better fit? (Hint: also include "nzv" to preProcess to drop zero variance features). What is your intuition why this can be the case?
 
