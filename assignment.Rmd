@@ -19,6 +19,10 @@ library(magrittr)
 library(tidyverse)
 library(ggplot2)
 library(GGally)
+library(glmnet)
+library(broom)    # for tidying regression coefficient outputs
+library(kableExtra)  # for nicer tables in rmarkdown
+
 
 ```
 
@@ -31,6 +35,14 @@ The goal will be to predict the logarithm of the property value: logTotalValue.
 data <- readRDS(url('http://www.jaredlander.com/data/manhattan_Train.rds')) %>% 
   as.data.table()
 data[, logTotalValue := log(TotalValue)]
+#data[, logBuiltFAR := log(BuiltFAR)]
+#data[, logLotFront := log(LotFront)]
+#data[, logNumFloors := log(NumFloors)]
+
+#data <- data[BldgArea < 25000]
+
+#skimr::skim(data)
+
 data <- data[complete.cases(data)]
 
 ```
@@ -52,18 +64,330 @@ ggplot(data = data, aes(x = TotalValue)) + geom_density()
 ggplot(data = data, aes(x = logTotalValue)) + geom_density()
 ```
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 
 ggcorr(data)
 
 ```
 
+```{r, message=FALSE}
+colnames(data)
+ggpairs(data, columns = c("logTotalValue", "NumFloors", "BuiltFAR", "LotFront"))
+```
+
+```{r}
+lm(logTotalValue ~ NumFloors + BuiltFAR, data = data) %>% 
+  tidy() %>% 
+  kable(digits = 3) %>% 
+  kable_styling(full_width = F)
+```
+
+```{r}
+lm(logTotalValue ~ UnitsTotal, data = data) %>% 
+  tidy() %>% 
+  kable(digits = 3) %>% 
+  kable_styling(full_width = F)
+```
+
+```{r}
+lm(logTotalValue ~ NumFloors, data = data) %>%
+  tidy() %>% 
+  kable(digits = 3) %>% 
+  kable_styling(full_width = F)
+```
+
+```{r}
+lm(logTotalValue ~ BuiltFAR, data = data) %>%
+  tidy() %>% 
+  kable(digits = 3) %>% 
+  kable_styling(full_width = F)
+```
 
 2- Create a training and a test set, assigning 30% of observations to the training set.
 
+
+```{r}
+set.seed(1234)
+training_ratio <- 0.7
+train_indices <- createDataPartition(
+  y = data[["logTotalValue"]],
+  times = 1,
+  p = training_ratio,
+  list = FALSE
+)
+data_train <- data[train_indices, ]
+data_test <- data[-train_indices, ]
+
+fit_control <- trainControl(method = "cv", number = 10)
+```
+
 3- Use a linear regression to predict logTotalValue and use 10-fold cross validation to assess the predictive power.
 
+```{r}
+set.seed(857)
+linear_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "lm",
+  preProcess = c("center", "scale"),
+  trControl = fit_control
+)
+
+
+#linear_fit
+RMSE(predict(linear_fit, newdata = data_test), data_test[["logTotalValue"]])
+```
+
 4- Use penalized linear models for the same task. Make sure to try LASSO, Ridge and Elastic Net models. Does the best model improve on the simple linear model?
+
+```{r}
+features <- setdiff(names(data), c("TotalValue", "logTotalValue"))
+```
+
+```{r}
+# glmnet needs inputs as a matrix. model.matrix: handles factor variables
+# -1: we do not need the intercept as glment will automatically include it
+x_train <- model.matrix( ~ . -1, data_train[, features, with = FALSE])
+dim(x_train)
+
+# standardization of variables is automatically done by glmnet
+
+# how much penalty do we want to apply? select with CV
+lambda_grid <- 10^seq(2,-5,length=100)  
+
+set.seed(1234)
+ridge_model <- glmnet(
+  x = x_train, y = data_train[["logTotalValue"]], 
+  family = "gaussian", # for continuous response
+  alpha = 0  # the ridge model
+)
+
+plot(ridge_model, xvar = "lambda")
+
+```
+
+Look at some individual coefficients.
+```{r}
+# helper function to extract the coefficient sequence as a data.table
+get_glmnet_coeff_sequence <- function(glmnet_model) {
+  coeff_sequence <- coef(glmnet_model) %>% tidy() %>% as.data.table()
+  setnames(coeff_sequence, c("variable", "lambda_id", "value"))
+
+  lambdas <- data.table(
+    lambda = glmnet_model$lambda, 
+    lambda_id = paste0("s", 0:(length(glmnet_model$lambda) - 1))
+  )
+  
+  merge(coeff_sequence, lambdas, by = "lambda_id") 
+}
+```
+
+```{r}
+ridge_coeffs <- get_glmnet_coeff_sequence(ridge_model)
+```
+
+```{r}
+selected_variables <- c("NumFloors", "BuiltFAR", "UnitsTotal",  "LotFront")
+ggplot(
+  data = ridge_coeffs[variable %in% selected_variables],
+  aes(x = log(lambda), y = value)) +
+    geom_line() +
+  facet_wrap(~ variable, scales = "free_y", ncol = 1)
+```
+
+We can use cross-validation to determine the optimal penalty term weight. Two lambda values marked on the plot: one with the minimal CV RMSE, the other is the simplest model (highest lambda) which contains the optimal lambda's error within one standard deviation. That is, it gives the simplest model that is still "good enough".
+
+```{r}
+set.seed(1234)
+ridge_model_cv <- cv.glmnet(
+  x = x_train, y = data_train[["logTotalValue"]], 
+  family = "gaussian",
+  alpha = 0,
+  nfolds = 10
+)
+
+best_lambda <- ridge_model_cv$lambda.min
+message(paste0("The optimally chosen penalty parameter: ", best_lambda))
+
+highest_good_enough_lambda <- ridge_model_cv$lambda.1se
+message(paste0("The highest good enough penalty parameter: ", highest_good_enough_lambda))
+```
+
+```{r}
+plot(ridge_model_cv)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# ridge model
+ridge_tune_grid <- expand.grid(
+  "alpha" = c(0),
+  "lambda" = seq(0.05, 0.5, by = 0.025)
+)
+
+set.seed(857)
+ridge_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = ridge_tune_grid,
+  trControl = fit_control
+)
+```
+
+```{r}
+ridge_fit
+```
+
+```{r}
+ggplot(ridge_fit)
+```
+
+## Another variant: LASSO regression
+
+While Ridge applies a constraint on the sum of squares of coefficients, LASSO does the same for the sum of the __absolute values__ of coefficients.
+
+This seemingly small difference has important sconsequences: some coefficients are set exactly to zero, others are only shrunk towards zero.
+```{r}
+set.seed(1234)
+lasso_model <- glmnet(
+  x = x_train, y = data_train[["logTotalValue"]], 
+  family = "gaussian",
+  alpha = 1  # the lasso model
+)
+
+plot(lasso_model, xvar = "lambda")
+```
+
+```{r}
+lasso_coeffs <- get_glmnet_coeff_sequence(lasso_model)
+```
+
+```{r}
+
+ggplot(
+  data = lasso_coeffs[variable %in% selected_variables],
+  aes(x = log(lambda), y = value)) +
+    geom_line() +
+  facet_wrap(~ variable, scales = "free_y", ncol = 1)
+```
+
+Again, we can apply cross-validation to determine the optimal value for the penalty term.
+
+```{r}
+set.seed(1234)
+lasso_model_cv <- cv.glmnet(
+  x = x_train, y = data_train[["logTotalValue"]], 
+  family = "gaussian",
+  alpha = 1,
+  nfolds = 10
+)
+
+best_lambda <- lasso_model_cv$lambda.min
+message(paste0("The optimally chosen penalty parameter: ", best_lambda))
+
+highest_good_enough_lambda <- lasso_model_cv$lambda.1se
+message(paste0("The highest good enough penalty parameter: ", highest_good_enough_lambda))
+```
+
+```{r}
+plot(lasso_model_cv)
+```
+
+Fitting LASSO models with `caret` is similar to that of Ridge.
+```{r, warning=FALSE}
+tenpowers <- 10^seq(-1, -5, by = -1)
+
+lasso_tune_grid <- expand.grid(
+  "alpha" = c(1),
+  "lambda" = c(tenpowers, tenpowers / 2) 
+)
+
+set.seed(857)
+lasso_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = lasso_tune_grid,
+  trControl = fit_control
+)
+```
+
+```{r}
+lasso_fit
+```
+
+```{r}
+ggplot(lasso_fit) + scale_x_log10()
+```
+
+## Combine Ridge and LASSO: Elastic net
+
+We can combine both types of penalties. LASSO is attractive since it performs principled variable selection. However, when having correlated features, typically only one of them - quite arbitrarily - is kept in the model. Ridge simultaneously shrinks coefficients of these towards zero. If we apply penalties of both the absolute values and the squares of the coefficients, both virtues are retained. This method is called Elastic net.
+
+```{r, message = FALSE, warning=FALSE}
+enet_tune_grid <- expand.grid(
+  "alpha" = seq(0, 1, by = 0.1),
+  "lambda" = union(lasso_tune_grid[["lambda"]], ridge_tune_grid[["lambda"]])
+)
+
+set.seed(857)
+enet_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = enet_tune_grid,
+  trControl = fit_control
+)
+```
+
+```{r}
+enet_fit
+```
+
+```{r}
+ggplot(enet_fit) + scale_x_log10()
+```
+
+```{r}
+resample_profile <- resamples(
+  list("linear" = linear_fit,
+       "ridge" = ridge_fit,
+       "lasso" = lasso_fit,
+       "elastic net" = enet_fit
+  )
+) 
+
+summary(resample_profile)
+```
+
+```{r}
+bwplot(resample_profile)
+```
+
+Are differences between models large in a statistical sense? Not really. What we can certainly see is that the plain linear model's variance is much larger than that of the penalized ones.
+
+```{r}
+model_differences <- diff(resample_profile)
+```
+
+```{r}
+summary(model_differences)
+```
+
+```{r}
+dotplot(model_differences)
+```
+
+### Evaluate the chosen model on holdout set
+
+```{r}
+RMSE(predict(enet_fit, newdata = data_test), data_test[["logTotalValue"]])
+```
+
+
 
 5- Which of the models you’ve trained is the “simples one that is still good enough”? (Hint: explore adding selectionFunction = "oneSE" to the trainControl in caret’s train. What is its effect?).
 
