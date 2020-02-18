@@ -385,6 +385,7 @@ dotplot(model_differences)
 
 ```{r}
 RMSE(predict(enet_fit, newdata = data_test), data_test[["logTotalValue"]])
+
 ```
 
 
