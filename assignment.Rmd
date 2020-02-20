@@ -20,9 +20,14 @@ library(tidyverse)
 library(ggplot2)
 library(GGally)
 library(glmnet)
+library(skimr)
 library(broom)    # for tidying regression coefficient outputs
-library(kableExtra)  # for nicer tables in rmarkdown
+library(kableExtra) 
+library(glue)
+# for nicer tables in rmarkdown
 
+library(ISLR)
+library(factoextra)
 
 ```
 
@@ -30,7 +35,7 @@ library(kableExtra)  # for nicer tables in rmarkdown
 
 The goal will be to predict the logarithm of the property value: logTotalValue.
 
-```{r, echo = FALSE}
+```{r}
 # more info about the data here: https://www1.nyc.gov/site/planning/data-maps/open-data/dwn-pluto-mappluto.page
 data <- readRDS(url('http://www.jaredlander.com/data/manhattan_Train.rds')) %>% 
   as.data.table()
@@ -39,8 +44,7 @@ data[, logTotalValue := log(TotalValue)]
 #data[, logLotFront := log(LotFront)]
 #data[, logNumFloors := log(NumFloors)]
 
-data <- data[LotArea < 25000 & BldgArea < 25000]
-
+data <- data[LotArea < 25000 & BldgArea < 25000 & NumFloors < 75 & BuiltFAR < 75]
 #skimr::skim(data[LotArea < 25000 & BldgArea < 25000])
 
 data <- data[, ZoneDist2 := NULL]
@@ -48,19 +52,16 @@ data <- data[, ZoneDist3 := NULL]
 data <- data[, ZoneDist4 := NULL]
 data <- data[, LotType := NULL]
 
-
-
 data <- data[complete.cases(data)]
-
-
 ```
 
+We dropped 4 variables that didn't have any variance, and also limited the dataset to certain limit of LotArea, BldgArea, NumFloors and BuiltFAR since there were some extreme values that wouldn't do good in our models.
 
 1- Do a short exploration of data and find possible predictors of the target variable.
 
 ```{r}
 skimr::skim(data)
-glimpse(data)
+#glimpse(data)
 ```
 
 
@@ -72,9 +73,13 @@ ggplot(data = data, aes(x = TotalValue)) + geom_density()
 ggplot(data = data, aes(x = logTotalValue)) + geom_density()
 ```
 
+With the correlation matrix we select some of the variables that might be the most accurate predictors overall.
+
 ```{r, warning=FALSE, message=FALSE}
 ggcorr(data)
 ```
+
+We select four of them to look at them better.
 
 ```{r, message=FALSE}
 #colnames(data)
@@ -109,8 +114,7 @@ lm(logTotalValue ~ BuiltFAR, data = data) %>%
   kable_styling(full_width = F)
 ```
 
-2- Create a training and a test set, assigning 30% of observations to the training set.
-
+2- Create a training and a test set, assigning 70% of observations to the training set.
 
 ```{r}
 set.seed(1234)
@@ -125,14 +129,16 @@ data_train <- data[train_indices, ]
 data_test <- data[-train_indices, ]
 
 fit_control <- trainControl(method = "cv", number = 10)
+fit_control_nose <- trainControl(method = "cv", number = 10, selectionFunction = "oneSE")
+
 ```
 
 3- Use a linear regression to predict logTotalValue and use 10-fold cross validation to assess the predictive power.
 
-```{r}
+```{r, warning= FALSE}
 set.seed(857)
 
-linear_fit_nose <- train(
+linear_fit <- train(
   logTotalValue ~ . -TotalValue,
   data = data_train,
   method = "lm",
@@ -140,6 +146,13 @@ linear_fit_nose <- train(
   trControl = fit_control
 )
 
+linear_fit_nose <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "lm",
+  preProcess = c("center", "scale"),
+  trControl = fit_control_nose
+)
 
 #linear_fit
 RMSE(predict(linear_fit, newdata = data_test), data_test[["logTotalValue"]])
@@ -189,7 +202,7 @@ get_glmnet_coeff_sequence <- function(glmnet_model) {
 }
 ```
 
-```{r}
+```{r, warning = FALSE}
 ridge_coeffs <- get_glmnet_coeff_sequence(ridge_model)
 ```
 
@@ -232,7 +245,7 @@ ridge_tune_grid <- expand.grid(
 )
 
 set.seed(857)
-ridge_fit_nose <- train(
+ridge_fit <- train(
   logTotalValue ~ . -TotalValue,
   data = data_train,
   method = "glmnet",
@@ -240,10 +253,21 @@ ridge_fit_nose <- train(
   tuneGrid = ridge_tune_grid,
   trControl = fit_control
 )
+
+
+ridge_fit_nose <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = ridge_tune_grid,
+  trControl = fit_control_nose
+)
+
 ```
 
 ```{r}
-ridge_fit
+#ridge_fit
 ```
 
 ```{r}
@@ -255,6 +279,7 @@ ggplot(ridge_fit)
 While Ridge applies a constraint on the sum of squares of coefficients, LASSO does the same for the sum of the __absolute values__ of coefficients.
 
 This seemingly small difference has important sconsequences: some coefficients are set exactly to zero, others are only shrunk towards zero.
+
 ```{r}
 set.seed(1234)
 lasso_model <- glmnet(
@@ -302,8 +327,9 @@ plot(lasso_model_cv)
 ```
 
 Fitting LASSO models with `caret` is similar to that of Ridge.
+
 ```{r, warning=FALSE}
-tenpowers <- 10^seq(-4, -7, by = -1)
+tenpowers <- 10^seq(-1, -5, by = -1)
 
 lasso_tune_grid <- expand.grid(
   "alpha" = c(1),
@@ -311,7 +337,7 @@ lasso_tune_grid <- expand.grid(
 )
 
 set.seed(857)
-lasso_fit_nose <- train(
+lasso_fit <- train(
   logTotalValue ~ . -TotalValue,
   data = data_train,
   method = "glmnet",
@@ -319,11 +345,20 @@ lasso_fit_nose <- train(
   tuneGrid = lasso_tune_grid,
   trControl = fit_control
 )
+
+
+lasso_fit_nose <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = lasso_tune_grid,
+  trControl = fit_control_nose
+)
+
 ```
 
-```{r}
-lasso_fit
-```
+It seems the RMSE doesn't change with different regularization parameters for LASSO
 
 ```{r}
 ggplot(lasso_fit) + scale_x_log10()
@@ -340,7 +375,7 @@ enet_tune_grid <- expand.grid(
 )
 
 set.seed(857)
-enet_fit_nose <- train(
+enet_fit <- train(
   logTotalValue ~ . -TotalValue,
   data = data_train,
   method = "glmnet",
@@ -348,60 +383,24 @@ enet_fit_nose <- train(
   tuneGrid = enet_tune_grid,
   trControl = fit_control
 )
+
+enet_fit_nose <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = enet_tune_grid,
+  trControl = fit_control_nose
+)
 ```
 
-```{r}
-enet_fit
-```
-
-```{r}
+```{r, warning= FALSE}
 ggplot(enet_fit) + scale_x_log10()
 ```
 
-```{r}
-resample_profile <- resamples(
-  list("linear" = linear_fit,
-       "ridge" = ridge_fit,
-       "lasso" = lasso_fit,
-       "elastic net" = enet_fit,
-       "linear_nose" = linear_fit_nose,
-       "lasso_nose" = lasso_fit_nose,
-       "elastic net_nose" = enet_fit_nose
-  )
-) 
-
-summary(resample_profile)
-```
-
-```{r}
-bwplot(resample_profile)
-```
-
-Are differences between models large in a statistical sense? Not really. What we can certainly see is that the plain linear model's variance is much larger than that of the penalized ones.
-
-```{r}
-model_differences <- diff(resample_profile)
-```
-
-```{r}
-summary(model_differences)
-```
-
-```{r}
-dotplot(model_differences)
-```
-
-### Evaluate the chosen model on holdout set
-
-```{r}
-RMSE(predict(linear_fit, newdata = data_test), data_test[["logTotalValue"]])
-
-```
-
-
 5- Which of the models you’ve trained is the “simples one that is still good enough”? (Hint: explore adding selectionFunction = "oneSE" to the trainControl in caret’s train. What is its effect?).
 
-- The linear model was the best performing out of all. The parameter *oneSE* in selectionFunction if added, it chooses the simplest model within one standard error of the best performance to be the optimal model.
+- The ElasticNet with oneSE was the best performing out of all. The parameter *oneSE* in selectionFunction if added, it chooses the simplest model within one standard error of the best performance to be the optimal model.
 
 EFFECT with oneSE: 
   - In LASSO, the RMSEs' mean remained the **same**.
@@ -410,8 +409,102 @@ EFFECT with oneSE:
 
 6- Now try to improve the linear model by using PCA for dimensionality reduction. Center and scale your variables and use pcr to conduct a search for the optimal number of principal components. Does PCA improve the fit over the simple linear model? (Hint: there are many factor variables. Make sure to include large number of principal components such as 60 - 90 to your search as well.)
 
+```{r}
+pre_process <- preProcess(data, method = c("center", "scale", "pca"))
+pre_process
+```
 
+```{r}
+set.seed(857)
+lm_fit_pca <- train(logTotalValue ~ . , 
+                    data = data, 
+                    method = "lm", 
+                    trControl = trainControl(
+                      method = "cv", 
+                      number = 10,
+                      preProcOptions = list(pcaComp = 19)), # here we selected 19 principal components
+                    preProcess = c("center", "scale", "pca")
+)
+#lm_fit_pca
+
+RMSE(predict(lm_fit_pca, newdata = data_test), data_test[["logTotalValue"]])
+```
 
 7- If you apply PCA prior to estimating penalized models via preProcess, does it help to achieve a better fit? (Hint: also include "nzv" to preProcess to drop zero variance features). What is your intuition why this can be the case?
 
+```{r}
+set.seed(857)
+ridge_fit_pca <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "pca", "nzv"),
+  tuneGrid = ridge_tune_grid,
+  trControl = fit_control
+)
+
+set.seed(857)
+lasso_fit_pca <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "pca", "nzv"),
+  tuneGrid = lasso_tune_grid,
+  trControl = fit_control
+)
+
+set.seed(857)
+enet_fit_pca <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "pca", "nzv"),
+  tuneGrid = enet_tune_grid,
+  trControl = fit_control
+)
+
+
+#lm_fit_pca_nzv
+
+RMSE(predict(ridge_fit_pca, newdata = data_test), data_test[["logTotalValue"]])
+RMSE(predict(lasso_fit_pca, newdata = data_test), data_test[["logTotalValue"]])
+RMSE(predict(enet_fit_pca, newdata = data_test), data_test[["logTotalValue"]])
+```
+
+It doesn't really help to use PCA in the models as all models tended to perform worse with it. Our intuitions bases itself that since we're losing some % of the data's variance
+
 8- Select the best model of those you’ve trained. Evaluate your preferred model on the test set.
+
+```{r}
+resample_profile <- resamples(
+  list("linear" = linear_fit,
+       "ridge" = ridge_fit,
+       "lasso" = lasso_fit,
+       "elastic net" = enet_fit,
+       "lm_fit_pca" = lm_fit_pca,
+       "linear_nose" = linear_fit_nose,
+       "lasso_nose" = lasso_fit_nose,
+       "elastic net_nose" = enet_fit_nose,
+       "lasso_fit_pca" = lasso_fit_pca,
+       "ridge_fit_pca" = ridge_fit_pca,
+       "enet_fit_pca" = enet_fit_pca
+  )
+) 
+
+summary(resample_profile)
+
+```
+
+```{r}
+bwplot(resample_profile)
+```
+
+Based in the summary, we can choose Lasso Fit with oneSE to predict in the test set.
+
+```{r}
+head(data_test %>% mutate(prediction = predict(lasso_fit_nose, newdata = data_test), data_test[["logTotalValue"]]) %>% select(prediction, logTotalValue), 10)
+
+RMSE(predict(lasso_fit_nose, newdata = data_test), data_test[["logTotalValue"]])
+```
+
+With a .613821 RMSE Lasso with oneSE proved to be the best model for this exercise.
