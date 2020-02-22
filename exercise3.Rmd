@@ -1,0 +1,101 @@
+---
+title: "DS2- 3. PCA of high-dimensional data (optional, for extra 5 points)"
+author: "Oscar Leal, Zsofia Vamos"
+date: "22/02/2020"
+output:
+  prettydoc::html_pretty:
+    highlight: github
+    theme: cayman
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(caret)
+library(skimr)
+library(datasets)
+library(ggplot2)
+library(magrittr)
+library(glue)
+library(prettydoc)
+library(ISLR)
+library(NbClust)
+library(factoextra)
+library(tidyverse)
+```
+
+### In this exercise you will perform PCA on 40 observations of 1000 variables. This is very different from what you are used to: there are much more variables than observations! These are measurments of genes of tissues of healthy and diseased patients: the first 20 observations are coming from healthy and the others from diseased patients.
+
+```{r}
+data <- fread("./data/gene_data_from_ISLR_ch_10/gene_data.csv")
+data[, is_diseased := factor(is_diseased)]
+dim(data)
+tail(names(data))
+```
+
+### a) Perform PCA on this data with scaling features.
+
+```{r}
+data_features <- copy(data)
+data_features[, is_diseased := NULL]
+
+pca_result <- prcomp(data_features, scale. = TRUE)
+
+# fviz_pca(pca_result)
+# wow that looks simple doesn't it
+
+# let's check the variance importance plots
+variances <- pca_result$sdev^2
+total_variance <- sum(variances)
+share_variance_by_component <- variances / total_variance
+dt_variance <- data.table(component = 1:length(variances),
+                          share_variance = share_variance_by_component)
+dt_variance[, cum_share_variance := cumsum(share_variance)]
+```
+
+
+```{r}
+ggplot(data = melt(dt_variance, id.vars = "component")) +
+  geom_line(aes(x = component, y = value, color = variable)) +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme(legend.position = "bottom") +
+  theme_bw()
+```
+
+It seems that after scaling, the first 40 variables capture the total variance of the 40 variables - unsurprisingly. It doesn't seem like the first to components will give us a thorough picture of the complete situation but they appear a lot more important than others. 
+
+### b) Visualize datapoints in the space of the first two principal components (look at the fviz_pca_ind function). What do you see in the figure?
+
+```{r}
+fviz_pca_ind(pca_result, col.ind="cos2", geom = "point") +
+  theme_bw()
+```
+
+There appears to be a large gap between the two sides of the plot - it's almost like when we had two very clearly defined clusters, which sound about right if we think about the fact that these dots are patients. Although we got rid of the factor indicating whether a patient was healthy or not, it seems that the first two principal components already give us a hint on the number of groups involved. But which group is which?
+
+
+### c) Which individual features can matter the most in separating diseased from healthy? A strategy to answer this can be the following:
+### - we see that PC1 matters a lot 
+### - so look at which features have high loadings for the first PC, that is, the largest coordinates (in absolute terms). (Hint: use the $rotation). Choose the two features with the largest coordinates and plot observations in the coordinate system defined by these two original features. What do you see?
+
+```{r}
+# let's check which features are the 10 most important contributors of PC1
+pc1 <- abs(pca_result$rotation[,1])
+pc1[order(-pc1)[1:10]]
+```
+```{r}
+# we can double check with a plot
+fviz_contrib(pca_result, "var", axes = 1, top = 10)
+
+ggplot(data, aes(measure_502, measure_589)) +
+  geom_point() +
+  geom_smooth(method = "lm", se= F) +
+  theme_bw()
+```
+
+The two most important variables in PC1 show a clear positive correlation with each other - if someone has a higher value for 502 they will have a higher one for 589 as well. This is a very useful takeaway given that we have 1000 variables in total, but with the help of PCA we could narrow our search down to two key factors. 
+
+
+### PCA thus offers a way to summarize vast amounts of variables in a handful of dimensions. This can serve as a tool to pick interesting variables where, for example, visual inspection would be hopeless.
+

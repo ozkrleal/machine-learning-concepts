@@ -1,0 +1,276 @@
+---
+title: "DS2 - Final Assignment"
+author: "Oscar Leal, Zsofia Vamos"
+date: "22/02/2020"
+output:
+  prettydoc::html_pretty:
+    highlight: github
+    theme: cayman
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+library(data.table)
+library(caret)
+library(skimr)
+library(datasets)
+library(ggplot2)
+library(magrittr)
+library(glue)
+library(prettydoc)
+library(ISLR)
+library(NbClust)
+library(factoextra)
+library(tidyverse)
+```
+
+## **Task 2**
+
+### a.) Think about any data pre-processing stesps you may/should want to do before applying clustering methods. Are there any?
+```{r, echo=FALSE}
+# let's read in the data as a data.table object
+df <- data.table(USArrests)
+```
+
+```{r, results='hide'}
+# we have 4 variables which match three types of crimes and the number of urban population
+# let's scale our data before we start with clustering
+df_scaled<-data.table(scale(df))
+print(skim(df_scaled))
+```
+
+Out of our four variables three denote a number of certain crimes committed in the state while one shows the urban population of the state. since not all states have an equal number of inhabitants, and especially urban inhabitants, it is worth scaling the data before we move on to clustering. This way all the crimes will be weighed properly taking into account the urban population - which is probably a significant factor when it comes to crime rates. 
+
+### b.) Determine the optimal number of clusters as indicated by NbClust heuristics.
+```{r, message=FALSE}
+# check the optimal number of clusters determined by NbClust
+nb <- NbClust(df_scaled, method = "kmeans", 
+              min.nc = 2, max.nc = 10, index = "all")
+
+fviz_nbclust(nb)
+```
+
+Per the NbClust function, the ideal number of clusers is two, but six can also work. Let's check both cases on a plot.  
+
+
+### c)Use the k-means method to cluster states using the number of clusters found in a) and anything else that you think that makes sense. Plot observations colored by clusters in the space of urban population and another (crime-related) variable. (See example code from class, use factor(km$cluster) to create a vector of class labels).
+
+#### 1. K=2
+
+First we'll use k = 2 to look at the optimal choice made by NbClust. 
+
+```{r}
+# let's use k-means to cluster by the best number determined by NbClust
+km <- kmeans(df_scaled, centers = 2)
+```
+
+```{r}
+# let's add cluster labels to the original data
+df_w_clusters <- cbind(df, 
+                         data.table("cluster" = factor(km$cluster)))
+
+# and plot it
+ggplot(df_w_clusters, 
+       aes(x = UrbanPop, y = Assault, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+
+```
+
+When we plot UrbanPop against Assault we can see that the two clusters are somewhat overlapping - I wouldn't be able to draw the cluster borders like this by looking at the scatterplot. 
+
+```{r}
+# let's add center marks to the plot by extracting center values from the k-means results
+centers <- data.table(km$centers)
+
+# function for adding center as a separate cluster
+plot_clusters_with_centers <- function(df, kmeans_object) {
+  
+  df_w_clusters <- cbind(
+    df_scaled, 
+    data.table("cluster" = factor(kmeans_object$cluster))
+  )
+  
+  centers <- data.table(kmeans_object$centers)
+  centers[, cluster := factor("center", levels = c(1, 2,"center"))]
+
+  df_w_clusters_centers <- rbind(df_w_clusters, centers)
+  ggplot(df_w_clusters_centers, 
+       aes(x = UrbanPop, 
+           y = Murder, 
+           color = cluster,
+           size = ifelse(cluster == "center", 1.5, 1))) + 
+    geom_point() +
+    scale_size(guide = 'none')+
+    theme_bw()
+}
+
+plot_clusters_with_centers(df_scaled, km)
+```
+
+#### 2. K=6
+
+Since the runner up in k-size was six, let's check if the plot looks any different with 6 clusters. 
+
+```{r}
+# now, since the second best k value was 6 let's see how different our plot looks with that
+km2 <- kmeans(df_scaled, centers = 6)
+
+df_w_clusters2 <- cbind(df_scaled, 
+                         data.table("cluster" = factor(km2$cluster)))
+
+plot_clusters_with_centers(df_scaled, km2)
+```
+
+Although the first cluster seems to be ovbious (#1), the other ones are once again pretty messy and it's hard to separate them visually. Cluster #5 seems to be all over the place and 3-4 are basically stuck together.
+
+### d)Perform PCA and get the first two principal component coordinates for all observations. Plot clusters of your choice from the previous points in the coordinate system defined by the first two principal components. How do clusters relate to these?
+
+```{r, echo=FALSE}
+# PCA
+# use the original data set because the PCA will scale it anyway - the result is the same
+pca_result <- prcomp(df, scale. = TRUE)
+first_two_pc <- data.table(pca_result$x[, 1:2])
+
+# let's see how much variance we're capturing with the first two PCs
+variances <- pca_result$sdev^2
+total_variance <- sum(variances)
+share_variance_by_component <- variances / total_variance
+dt_variance <- data.table(component = 1:length(variances),
+                          share_variance = share_variance_by_component)
+dt_variance[, cum_share_variance := cumsum(share_variance)]
+```
+
+First let's check how much variance we can capture with the first two principal components.
+```{r}
+ggplot(data = melt(dt_variance, id.vars = "component")) +
+  geom_line(aes(x = component, y = value, color = variable)) +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme(legend.position = "bottom")+
+  theme_bw()
+```
+
+It seems that PC1 captures a little more than 60% of the variance on its own, and when paired up with PC2 they account for about 87% together. This is more than enough for us to get a good picture and a nicer visualization of clusters in an interpretable dimension.
+
+Let's see what our observations look like when we plot them against PC1&2.
+```{r}
+# add rownames back to data
+fviz_pca(pca_result)
+```
+
+That's a bit hard to read, let's check how the clusters are doing.
+
+#### K=2
+
+```{r}
+# K=2
+km_pca <- kmeans(first_two_pc, centers = 2)
+
+# add cluster labels to pca data
+pca_w_clusters <- cbind(first_two_pc, 
+                         data.table("cluster" = factor(km_pca$cluster)))
+# plot it
+ggplot(pca_w_clusters, 
+       aes(x = PC1, y = PC2, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+```
+
+By removing 2 of the least significant dimensions we managed to get a plot on which the clusters are visually a lot easier to separate.There seems to be a clear cut in the middle between the two different clusters, there are no areas where the different colors overlap.
+
+#### K=6
+
+```{r}
+# k=6
+km_pca2 <- kmeans(first_two_pc, centers = 6)
+
+# add cluster labels to pca data
+pca_w_clusters2 <- cbind(first_two_pc, 
+                         data.table("cluster" = factor(km_pca2$cluster)))
+# plot
+ggplot(pca_w_clusters2, 
+       aes(x = PC1, y = PC2, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+```
+
+Although the distinction would not be easy to make if the dots were colored differently, the cuts are still pretty clean compared to the first plots where we had used all dimensions. 
+
+## **Task 3**
+
+### In this exercise you will perform PCA on 40 observations of 1000 variables. This is very different from what you are used to: there are much more variables than observations! These are measurments of genes of tissues of healthy and diseased patients: the first 20 observations are coming from healthy and the others from diseased patients.
+
+```{r, results='hide', message=FALSE}
+data <- fread("./data/gene_data_from_ISLR_ch_10/gene_data.csv")
+data[, is_diseased := factor(is_diseased)]
+dim(data)
+tail(names(data))
+```
+
+### a) Perform PCA on this data with scaling features.
+
+```{r}
+data_features <- copy(data)
+data_features[, is_diseased := NULL]
+
+pca_result <- prcomp(data_features, scale. = TRUE)
+
+# fviz_pca(pca_result)
+# wow that looks simple doesn't it
+
+# let's check the variance importance plots
+variances <- pca_result$sdev^2
+total_variance <- sum(variances)
+share_variance_by_component <- variances / total_variance
+dt_variance <- data.table(component = 1:length(variances),
+                          share_variance = share_variance_by_component)
+dt_variance[, cum_share_variance := cumsum(share_variance)]
+```
+
+
+```{r}
+ggplot(data = melt(dt_variance, id.vars = "component")) +
+  geom_line(aes(x = component, y = value, color = variable)) +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme(legend.position = "bottom") +
+  theme_bw()
+```
+
+It seems that after scaling, the first 40 variables capture the total variance of the 40 variables - unsurprisingly. It doesn't seem like the first to components will give us a thorough picture of the complete situation but they appear a lot more important than others. 
+
+### b) Visualize datapoints in the space of the first two principal components (look at the fviz_pca_ind function). What do you see in the figure?
+
+```{r}
+fviz_pca_ind(pca_result, col.ind="cos2", geom = "point") +
+  theme_bw()
+```
+
+There appears to be a large gap between the two sides of the plot - it's almost like when we had two very clearly defined clusters, which sound about right if we think about the fact that these dots are patients. Although we got rid of the factor indicating whether a patient was healthy or not, it seems that the first two principal components already give us a hint on the number of groups involved. But which group is which?
+
+
+### c) Which individual features can matter the most in separating diseased from healthy? A strategy to answer this can be the following:
+### - we see that PC1 matters a lot 
+### - so look at which features have high loadings for the first PC, that is, the largest coordinates (in absolute terms). (Hint: use the $rotation). Choose the two features with the largest coordinates and plot observations in the coordinate system defined by these two original features. What do you see?
+
+```{r}
+# let's check which features are the 10 most important contributors of PC1
+pc1 <- abs(pca_result$rotation[,1])
+pc1[order(-pc1)[1:10]]
+```
+
+```{r}
+# we can double check with a plot
+fviz_contrib(pca_result, "var", axes = 1, top = 10)
+
+ggplot(data, aes(measure_502, measure_589)) +
+  geom_point() +
+  geom_smooth(method = "lm", se= F) +
+  theme_bw()
+```
+
+The two most important variables in PC1 show a clear positive correlation with each other - if someone has a higher value for 502 they will have a higher one for 589 as well. This is a very useful takeaway given that we have 1000 variables in total, but with the help of PCA we could narrow our search down to two key factors. 
+
+
+### PCA thus offers a way to summarize vast amounts of variables in a handful of dimensions. This can serve as a tool to pick interesting variables where, for example, visual inspection would be hopeless.
+
