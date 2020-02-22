@@ -1,0 +1,154 @@
+---
+title: "DS2- 2. Clustering on the USArrests dataset (18 points)"
+author: "Oscar Leal, Zsofia Vamos"
+date: "22/02/2020"
+output:
+  prettydoc::html_pretty:
+    highlight: github
+    theme: cayman
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(caret)
+library(skimr)
+library(datasets)
+library(ggplot2)
+library(magrittr)
+library(glue)
+library(prettydoc)
+library(ISLR)
+library(NbClust)
+library(factoextra)
+```
+
+### a.) Think about any data pre-processing stesps you may/should want to do before applying clustering methods. Are there any?
+```{r}
+df <- data.table(USArrests)
+head(USArrests)
+
+# first it's worth scaling all variables
+df_scaled <-data.table(scale(df))
+print(skim(df_scaled))
+
+```
+We need to scale our data to make sure all variables are weighed properly.
+
+### b.) Determine the optimal number of clusters as indicated by NbClust heuristics.
+```{r, results="hide"}
+# check the optimal number of clusters determined by NbClust
+nb <- NbClust(df_scaled, method = "kmeans", 
+              min.nc = 2, max.nc = 10, index = "all")
+
+fviz_nbclust(nb)
+```
+The optimal number of clusters is 2 per the function. 
+
+
+### c)Use the k-means method to cluster states using the number of clusters found in a) and anything else that you think that makes sense. Plot observations colored by clusters in the space of urban population and another (crime-related) variable. (See example code from class, use factor(km$cluster) to create a vector of class labels).
+
+```{r}
+# let's use k-means to cluster by the optimal number determined by NbClust
+km <- kmeans(df_scaled, centers = 2)
+km
+
+df_w_clusters <- cbind(df, 
+                         data.table("cluster" = factor(km$cluster)))
+
+ggplot(df_w_clusters, 
+       aes(x = UrbanPop, y = Murder, color = cluster)) + 
+  geom_point()
+
+centers <- data.table(km$centers)
+
+plot_clusters_with_centers <- function(df, kmeans_object) {
+  
+  df_w_clusters <- cbind(
+    df_scaled, 
+    data.table("cluster" = factor(kmeans_object$cluster))
+  )
+  
+  centers <- data.table(kmeans_object$centers)
+  centers[, cluster := factor("center", levels = c(1, 2,"center"))]
+
+  df_w_clusters_centers <- rbind(df_w_clusters, centers)
+  ggplot(df_w_clusters_centers, 
+       aes(x = UrbanPop, 
+           y = Murder, 
+           color = cluster,
+           size = ifelse(cluster == "center", 2, 1))) + 
+    geom_point() +
+    scale_size(guide = 'none')+
+    theme_bw()
+}
+
+plot_clusters_with_centers(df_scaled, km)
+```
+
+
+```{r}
+# now, since the second best k value was 6 let's see how different our plot looks with that
+km2 <- kmeans(df_scaled, centers = 6)
+km2
+
+df_w_clusters2 <- cbind(df_scaled, 
+                         data.table("cluster" = factor(km2$cluster)))
+
+ggplot(df_w_clusters2, 
+       aes(x = UrbanPop, y = Murder, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+plot_clusters_with_centers(df_scaled, km2)
+```
+
+
+```{r}
+# PCA
+# use the original data set because the PCA will scale it anyway - the result is the same
+pca_result <- prcomp(df, scale. = TRUE)
+first_two_pc <- data.table(pca_result$x[, 1:2])
+
+# let's see how much variance we're capturing with the first two PCs
+
+variances <- pca_result$sdev^2
+
+total_variance <- sum(variances)
+share_variance_by_component <- variances / total_variance
+dt_variance <- data.table(component = 1:length(variances),
+                          share_variance = share_variance_by_component)
+dt_variance[, cum_share_variance := cumsum(share_variance)]
+```
+
+```{r}
+ggplot(data = melt(dt_variance, id.vars = "component")) +
+  geom_line(aes(x = component, y = value, color = variable)) +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme(legend.position = "bottom")
+
+km_pca <- kmeans(first_two_pc, centers = 2)
+km_pca
+
+pca_w_clusters <- cbind(first_two_pc, 
+                         data.table("cluster" = factor(km_pca$cluster)))
+
+ggplot(pca_w_clusters, 
+       aes(x = PC1, y = PC2, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+
+
+km_pca2 <- kmeans(first_two_pc, centers = 6)
+km_pca2
+
+pca_w_clusters2 <- cbind(first_two_pc, 
+                         data.table("cluster" = factor(km_pca2$cluster)))
+
+ggplot(pca_w_clusters2, 
+       aes(x = PC1, y = PC2, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+```
+
+
