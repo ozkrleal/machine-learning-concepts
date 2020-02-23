@@ -1,0 +1,785 @@
+---
+title: "DS2 - Final Assignment"
+author: "Oscar Leal, Zsofia Vamos"
+date: "22/02/2020"
+output:
+  prettydoc::html_pretty:
+    highlight: github
+    theme: cayman
+  html_document:
+    df_print: paged
+---
+## **Task 1**
+```{r, echo = FALSE, include = FALSE}
+library(data.table)
+library(datasets)
+library(MASS)
+library(ISLR)
+library(caret)
+library(magrittr)
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+library(glmnet)
+library(skimr)
+library(broom)    # for tidying regression coefficient outputs
+library(kableExtra) 
+library(glue)
+# for nicer tables in rmarkdown
+
+library(ISLR)
+library(factoextra)
+
+```
+
+## Supervised learning with penalized models and PCA
+
+The goal will be to predict the logarithm of the property value: logTotalValue.
+
+```{r}
+# more info about the data here: https://www1.nyc.gov/site/planning/data-maps/open-data/dwn-pluto-mappluto.page
+data <- readRDS(url('http://www.jaredlander.com/data/manhattan_Train.rds')) %>% 
+  as.data.table()
+#data[, logBuiltFAR := log(BuiltFAR)]
+#data[, logLotFront := log(LotFront)]
+#data[, logNumFloors := log(NumFloors)]
+
+data <- data[LotArea < 25000 & BldgArea < 25000 & NumFloors < 75 & BuiltFAR < 75]
+data[, logTotalValue := log(TotalValue)]
+
+data <- data[, ZoneDist2 := NULL]
+data <- data[, ZoneDist3 := NULL]
+data <- data[, ZoneDist4 := NULL]
+data <- data[, LotType := NULL]
+
+data <- data[complete.cases(data)]
+```
+
+We dropped 4 variables that didn't have any variance, and also limited the dataset to certain limit of LotArea, BldgArea, NumFloors and BuiltFAR since there were some extreme values that wouldn't do good in our models.
+
+1- Do a short exploration of data and find possible predictors of the target variable.
+
+```{r}
+skimr::skim(data)
+#glimpse(data)
+
+```
+
+
+```{r}
+ggplot(data = data, aes(x = TotalValue)) + geom_density()
+```
+
+```{r}
+ggplot(data = data, aes(x = logTotalValue)) + geom_density()
+```
+
+With the correlation matrix we select some of the variables that might be the most accurate predictors overall.
+
+```{r, warning=FALSE, message=FALSE}
+ggcorr(data)
+```
+
+We select four of them to look at them better.
+
+```{r, message=FALSE}
+#colnames(data)
+ggpairs(data, columns = c("logTotalValue", "NumFloors", "BuiltFAR", "LotFront"))
+```
+
+```{r}
+lm(logTotalValue ~ NumFloors + BuiltFAR, data = data) %>% 
+  tidy() %>% 
+  kable(digits = 3) %>% 
+  kable_styling(full_width = F)
+```
+
+```{r}
+lm(logTotalValue ~ UnitsTotal, data = data) %>% 
+  tidy() %>% 
+  kable(digits = 3) %>% 
+  kable_styling(full_width = F)
+```
+
+```{r}
+lm(logTotalValue ~ NumFloors, data = data) %>%
+  tidy() %>% 
+  kable(digits = 3) %>% 
+  kable_styling(full_width = F)
+```
+
+```{r}
+lm(logTotalValue ~ BuiltFAR, data = data) %>%
+  tidy() %>% 
+  kable(digits = 3) %>% 
+  kable_styling(full_width = F)
+```
+
+2- Create a training and a test set, assigning 30% of observations to the training set.
+
+```{r}
+set.seed(1234)
+training_ratio <- 0.3
+train_indices <- createDataPartition(
+  y = data[["logTotalValue"]],
+  times = 1,
+  p = training_ratio,
+  list = FALSE
+)
+data_train <- data[train_indices, ]
+data_test <- data[-train_indices, ]
+
+fit_control <- trainControl(method = "cv", number = 10)
+fit_control_nose <- trainControl(method = "cv", number = 10, selectionFunction = "oneSE")
+
+```
+
+3- Use a linear regression to predict logTotalValue and use 10-fold cross validation to assess the predictive power.
+
+```{r, warning= FALSE}
+set.seed(857)
+
+linear_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "lm",
+  preProcess = c("center", "scale", "nzv"),
+  trControl = fit_control
+)
+
+linear_fit_nose <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "lm",
+  preProcess = c("center", "scale", "nzv"),
+  trControl = fit_control_nose
+)
+
+#linear_fit
+RMSE(predict(linear_fit, newdata = data_test), data_test[["logTotalValue"]])
+```
+
+4- Use penalized linear models for the same task. Make sure to try LASSO, Ridge and Elastic Net models. Does the best model improve on the simple linear model?
+
+```{r}
+features <- setdiff(names(data), c("TotalValue", "logTotalValue"))
+```
+
+```{r}
+# glmnet needs inputs as a matrix. model.matrix: handles factor variables
+# -1: we do not need the intercept as glment will automatically include it
+x_train <- model.matrix( ~ . -1, data_train[, features, with = FALSE])
+dim(x_train)
+
+# standardization of variables is automatically done by glmnet
+
+# how much penalty do we want to apply? select with CV
+lambda_grid <- 10^seq(2,-5,length=100)  
+
+set.seed(1234)
+ridge_model <- glmnet(
+  x = x_train, y = data_train[["logTotalValue"]], 
+  family = "gaussian", # for continuous response
+  alpha = 0  # the ridge model
+)
+
+plot(ridge_model, xvar = "lambda")
+
+```
+
+Look at some individual coefficients.
+```{r}
+# helper function to extract the coefficient sequence as a data.table
+get_glmnet_coeff_sequence <- function(glmnet_model) {
+  coeff_sequence <- coef(glmnet_model) %>% tidy() %>% as.data.table()
+  setnames(coeff_sequence, c("variable", "lambda_id", "value"))
+
+  lambdas <- data.table(
+    lambda = glmnet_model$lambda, 
+    lambda_id = paste0("s", 0:(length(glmnet_model$lambda) - 1))
+  )
+  
+  merge(coeff_sequence, lambdas, by = "lambda_id") 
+}
+```
+
+```{r, warning = FALSE}
+ridge_coeffs <- get_glmnet_coeff_sequence(ridge_model)
+```
+
+```{r}
+selected_variables <- c("NumFloors", "BuiltFAR", "UnitsTotal",  "LotFront")
+ggplot(
+  data = ridge_coeffs[variable %in% selected_variables],
+  aes(x = log(lambda), y = value)) +
+    geom_line() +
+  facet_wrap(~ variable, scales = "free_y", ncol = 1)
+```
+
+We can use cross-validation to determine the optimal penalty term weight. Two lambda values marked on the plot: one with the minimal CV RMSE, the other is the simplest model (highest lambda) which contains the optimal lambda's error within one standard deviation. That is, it gives the simplest model that is still "good enough".
+
+```{r}
+set.seed(1234)
+ridge_model_cv <- cv.glmnet(
+  x = x_train, y = data_train[["logTotalValue"]], 
+  family = "gaussian",
+  alpha = 0,
+  nfolds = 10
+)
+
+best_lambda <- ridge_model_cv$lambda.min
+message(paste0("The optimally chosen penalty parameter: ", best_lambda))
+
+highest_good_enough_lambda <- ridge_model_cv$lambda.1se
+message(paste0("The highest good enough penalty parameter: ", highest_good_enough_lambda))
+```
+
+```{r}
+plot(ridge_model_cv)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# ridge model
+ridge_tune_grid <- expand.grid(
+  "alpha" = c(0),
+  "lambda" = seq(0.05, 0.5, by = 0.025)
+)
+
+set.seed(857)
+ridge_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv"),
+  tuneGrid = ridge_tune_grid,
+  trControl = fit_control
+)
+
+
+ridge_fit_nose <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv"),
+  tuneGrid = ridge_tune_grid,
+  trControl = fit_control_nose
+)
+
+```
+
+```{r}
+#ridge_fit
+```
+
+```{r}
+ggplot(ridge_fit)
+```
+
+## Another variant: LASSO regression
+
+While Ridge applies a constraint on the sum of squares of coefficients, LASSO does the same for the sum of the __absolute values__ of coefficients.
+
+This seemingly small difference has important sconsequences: some coefficients are set exactly to zero, others are only shrunk towards zero.
+
+```{r}
+set.seed(1234)
+lasso_model <- glmnet(
+  x = x_train, y = data_train[["logTotalValue"]], 
+  family = "gaussian",
+  alpha = 1  # the lasso model
+)
+
+plot(lasso_model, xvar = "lambda")
+```
+
+```{r}
+lasso_coeffs <- get_glmnet_coeff_sequence(lasso_model)
+```
+
+```{r}
+
+ggplot(
+  data = lasso_coeffs[variable %in% selected_variables],
+  aes(x = log(lambda), y = value)) +
+    geom_line() +
+  facet_wrap(~ variable, scales = "free_y", ncol = 1)
+```
+
+Again, we can apply cross-validation to determine the optimal value for the penalty term.
+
+```{r}
+set.seed(1234)
+lasso_model_cv <- cv.glmnet(
+  x = x_train, y = data_train[["logTotalValue"]], 
+  family = "gaussian",
+  alpha = 1,
+  nfolds = 10
+)
+
+best_lambda <- lasso_model_cv$lambda.min
+message(paste0("The optimally chosen penalty parameter: ", best_lambda))
+
+highest_good_enough_lambda <- lasso_model_cv$lambda.1se
+message(paste0("The highest good enough penalty parameter: ", highest_good_enough_lambda))
+```
+
+```{r}
+plot(lasso_model_cv)
+```
+
+Fitting LASSO models with `caret` is similar to that of Ridge.
+
+```{r, warning=FALSE}
+tenpowers <- 10^seq(-1, -5, by = -1)
+
+lasso_tune_grid <- expand.grid(
+  "alpha" = c(1),
+  "lambda" = c(tenpowers, tenpowers / 2) 
+)
+
+set.seed(857)
+lasso_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv"),
+  tuneGrid = lasso_tune_grid,
+  trControl = fit_control
+)
+
+
+lasso_fit_nose <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv"),
+  tuneGrid = lasso_tune_grid,
+  trControl = fit_control_nose
+)
+
+```
+
+It seems the RMSE changes much with different regularization parameters for LASSO
+
+```{r}
+ggplot(lasso_fit) + scale_x_log10()
+```
+
+## Combine Ridge and LASSO: Elastic net
+
+We can combine both types of penalties. LASSO is attractive since it performs principled variable selection. However, when having correlated features, typically only one of them - quite arbitrarily - is kept in the model. Ridge simultaneously shrinks coefficients of these towards zero. If we apply penalties of both the absolute values and the squares of the coefficients, both virtues are retained. This method is called Elastic net.
+
+```{r, message = FALSE, warning=FALSE}
+enet_tune_grid <- expand.grid(
+  "alpha" = seq(0, 1, by = 0.1),
+  "lambda" = union(lasso_tune_grid[["lambda"]], ridge_tune_grid[["lambda"]])
+)
+
+set.seed(857)
+enet_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv"),
+  tuneGrid = enet_tune_grid,
+  trControl = fit_control
+)
+
+enet_fit_nose <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv"),
+  tuneGrid = enet_tune_grid,
+  trControl = fit_control_nose
+)
+```
+
+```{r, warning= FALSE}
+ggplot(enet_fit) + scale_x_log10()
+```
+
+5- Which of the models you’ve trained is the “simples one that is still good enough”? (Hint: explore adding selectionFunction = "oneSE" to the trainControl in caret’s train. What is its effect?).
+
+- The ElasticNet with oneSE was the best performing out of all. The parameter *oneSE* in selectionFunction if added, it chooses the simplest model within one standard error of the best performance to be the optimal model.
+
+EFFECT with oneSE: 
+  - In LASSO, the RMSEs' mean remained the **same**.
+  - In Elastic Net, the RMSEs' mean became **better**.
+  - In Linear Reg, the RMSEs' mean became **worse**.
+
+6- Now try to improve the linear model by using PCA for dimensionality reduction. Center and scale your variables and use pcr to conduct a search for the optimal number of principal components. Does PCA improve the fit over the simple linear model? (Hint: there are many factor variables. Make sure to include large number of principal components such as 60 - 90 to your search as well.)
+
+```{r}
+pre_process <- preProcess(data, method = c("center", "scale", "pca"))
+pre_process
+```
+
+```{r}
+set.seed(857)
+lm_fit_pca <- train(logTotalValue ~ . -TotalValue, 
+                    data = data, 
+                    method = "lm", 
+                    trControl = trainControl(
+                      method = "cv", 
+                      number = 10,
+                      preProcOptions = list(pcaComp = 19)), # here we selected 19 principal components
+                    preProcess = c("center", "scale", "pca", "nzv")
+)
+
+#lm_fit_pca
+
+RMSE(predict(lm_fit_pca, newdata = data_test), data_test[["logTotalValue"]])
+```
+
+7- If you apply PCA prior to estimating penalized models via preProcess, does it help to achieve a better fit? (Hint: also include "nzv" to preProcess to drop zero variance features). What is your intuition why this can be the case?
+
+```{r}
+set.seed(857)
+ridge_fit_pca <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "pca", "nzv"),
+  tuneGrid = ridge_tune_grid,
+  trControl = fit_control
+)
+
+set.seed(857)
+lasso_fit_pca <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "pca", "nzv"),
+  tuneGrid = lasso_tune_grid,
+  trControl = fit_control
+)
+
+set.seed(857)
+enet_fit_pca <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "pca", "nzv"),
+  tuneGrid = enet_tune_grid,
+  trControl = fit_control
+)
+
+
+#lm_fit_pca_nzv
+
+RMSE(predict(ridge_fit_pca, newdata = data_test), data_test[["logTotalValue"]])
+RMSE(predict(lasso_fit_pca, newdata = data_test), data_test[["logTotalValue"]])
+RMSE(predict(enet_fit_pca, newdata = data_test), data_test[["logTotalValue"]])
+```
+
+It doesn't really help to use PCA in the models as all models tended to perform worse with it. Our intuitions bases itself that since we're losing some % of the data's variance
+
+8- Select the best model of those you’ve trained. Evaluate your preferred model on the test set.
+
+```{r}
+resample_profile <- resamples(
+  list("linear" = linear_fit,
+       "ridge" = ridge_fit,
+       "lasso" = lasso_fit,
+       "elastic net" = enet_fit,
+       "lm_fit_pca" = lm_fit_pca,
+       "linear_nose" = linear_fit_nose,
+       "lasso_nose" = lasso_fit_nose,
+       "elastic net_nose" = enet_fit_nose,
+       "lasso_fit_pca" = lasso_fit_pca,
+       "ridge_fit_pca" = ridge_fit_pca,
+       "enet_fit_pca" = enet_fit_pca
+  )
+) 
+
+summary(resample_profile)
+
+```
+
+```{r}
+bwplot(resample_profile)
+```
+
+Based in the summary, we can choose Lasso Fit with oneSE to predict in the test set.
+
+```{r, warning = FALSE}
+head(data_test %>% mutate(prediction = predict(lasso_fit_nose, newdata = data_test), data_test[["logTotalValue"]]) %>% select(prediction, logTotalValue), 10)
+
+RMSE(predict(lasso_fit_nose, newdata = data_test), data_test[["logTotalValue"]])
+```
+
+The value of RMSE .6480047 is given with Lasso Fit with one SE, and we can agree it is the best model for prediction in the data test set.
+
+
+## **Task 2**
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+library(data.table)
+library(caret)
+library(skimr)
+library(datasets)
+library(ggplot2)
+library(magrittr)
+library(glue)
+library(dplyr)
+library(prettydoc)
+library(ISLR)
+library(NbClust)
+library(factoextra)
+library(tidyverse)
+library(MASS)
+library(GGally)
+library(glmnet)
+library(broom)    # for tidying regression coefficient outputs
+library(kableExtra) 
+# for nicer tables in rmarkdown
+```
+
+### a.) Think about any data pre-processing stesps you may/should want to do before applying clustering methods. Are there any?
+```{r, echo=FALSE}
+# let's read in the data as a data.table object
+df <- data.table(USArrests)
+```
+
+```{r, results='hide'}
+# we have 4 variables which match three types of crimes and the number of urban population
+# let's scale our data before we start with clustering
+df_scaled<-data.table(scale(df))
+print(skim(df_scaled))
+```
+
+Out of our four variables three denote a number of certain crimes committed in the state while one shows the urban population of the state. since not all states have an equal number of inhabitants, and especially urban inhabitants, it is worth scaling the data before we move on to clustering. This way all the crimes will be weighed properly taking into account the urban population - which is probably a significant factor when it comes to crime rates. 
+
+### b.) Determine the optimal number of clusters as indicated by NbClust heuristics.
+```{r, message=FALSE}
+# check the optimal number of clusters determined by NbClust
+nb <- NbClust(df_scaled, method = "kmeans", 
+              min.nc = 2, max.nc = 10, index = "all")
+
+fviz_nbclust(nb)
+```
+
+Per the NbClust function, the ideal number of clusers is two, but six can also work. Let's check both cases on a plot.  
+
+
+### c)Use the k-means method to cluster states using the number of clusters found in a) and anything else that you think that makes sense. Plot observations colored by clusters in the space of urban population and another (crime-related) variable. (See example code from class, use factor(km$cluster) to create a vector of class labels).
+
+#### 1. K=2
+
+First we'll use k = 2 to look at the optimal choice made by NbClust. 
+
+```{r}
+# let's use k-means to cluster by the best number determined by NbClust
+km <- kmeans(df_scaled, centers = 2)
+```
+
+```{r}
+# let's add cluster labels to the original data
+df_w_clusters <- cbind(df, 
+                         data.table("cluster" = factor(km$cluster)))
+
+# and plot it
+ggplot(df_w_clusters, 
+       aes(x = UrbanPop, y = Assault, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+
+```
+
+When we plot UrbanPop against Assault we can see that the two clusters are somewhat overlapping - I wouldn't be able to draw the cluster borders like this by looking at the scatterplot. 
+
+```{r}
+# let's add center marks to the plot by extracting center values from the k-means results
+centers <- data.table(km$centers)
+
+# function for adding center as a separate cluster
+plot_clusters_with_centers <- function(df, kmeans_object) {
+  
+  df_w_clusters <- cbind(
+    df_scaled, 
+    data.table("cluster" = factor(kmeans_object$cluster))
+  )
+  
+  centers <- data.table(kmeans_object$centers)
+  centers[, cluster := factor("center", levels = c(1, 2,"center"))]
+
+  df_w_clusters_centers <- rbind(df_w_clusters, centers)
+  ggplot(df_w_clusters_centers, 
+       aes(x = UrbanPop, 
+           y = Murder, 
+           color = cluster,
+           size = ifelse(cluster == "center", 1.5, 1))) + 
+    geom_point() +
+    scale_size(guide = 'none')+
+    theme_bw()
+}
+
+plot_clusters_with_centers(df_scaled, km)
+```
+
+#### 2. K=6
+
+Since the runner up in k-size was six, let's check if the plot looks any different with 6 clusters. 
+
+```{r}
+# now, since the second best k value was 6 let's see how different our plot looks with that
+km2 <- kmeans(df_scaled, centers = 6)
+
+df_w_clusters2 <- cbind(df_scaled, 
+                         data.table("cluster" = factor(km2$cluster)))
+
+plot_clusters_with_centers(df_scaled, km2)
+```
+
+Although the first cluster seems to be ovbious (#1), the other ones are once again pretty messy and it's hard to separate them visually. Cluster #5 seems to be all over the place and 3-4 are basically stuck together.
+
+### d)Perform PCA and get the first two principal component coordinates for all observations. Plot clusters of your choice from the previous points in the coordinate system defined by the first two principal components. How do clusters relate to these?
+
+```{r, echo=FALSE}
+# PCA
+# use the original data set because the PCA will scale it anyway - the result is the same
+pca_result <- prcomp(df, scale. = TRUE)
+first_two_pc <- data.table(pca_result$x[, 1:2])
+
+# let's see how much variance we're capturing with the first two PCs
+variances <- pca_result$sdev^2
+total_variance <- sum(variances)
+share_variance_by_component <- variances / total_variance
+dt_variance <- data.table(component = 1:length(variances),
+                          share_variance = share_variance_by_component)
+dt_variance[, cum_share_variance := cumsum(share_variance)]
+```
+
+First let's check how much variance we can capture with the first two principal components.
+```{r}
+ggplot(data = melt(dt_variance, id.vars = "component")) +
+  geom_line(aes(x = component, y = value, color = variable)) +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme(legend.position = "bottom")+
+  theme_bw()
+```
+
+It seems that PC1 captures a little more than 60% of the variance on its own, and when paired up with PC2 they account for about 87% together. This is more than enough for us to get a good picture and a nicer visualization of clusters in an interpretable dimension.
+
+Let's see what our observations look like when we plot them against PC1&2.
+```{r}
+# add rownames back to data
+fviz_pca(pca_result)
+```
+
+That's a bit hard to read, let's check how the clusters are doing.
+
+#### K=2
+
+```{r}
+# K=2
+km_pca <- kmeans(first_two_pc, centers = 2)
+
+# add cluster labels to pca data
+pca_w_clusters <- cbind(first_two_pc, 
+                         data.table("cluster" = factor(km_pca$cluster)))
+# plot it
+ggplot(pca_w_clusters, 
+       aes(x = PC1, y = PC2, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+```
+
+By removing 2 of the least significant dimensions we managed to get a plot on which the clusters are visually a lot easier to separate.There seems to be a clear cut in the middle between the two different clusters, there are no areas where the different colors overlap.
+
+#### K=6
+
+```{r}
+# k=6
+km_pca2 <- kmeans(first_two_pc, centers = 6)
+
+# add cluster labels to pca data
+pca_w_clusters2 <- cbind(first_two_pc, 
+                         data.table("cluster" = factor(km_pca2$cluster)))
+# plot
+ggplot(pca_w_clusters2, 
+       aes(x = PC1, y = PC2, color = cluster)) + 
+  geom_point() +
+  theme_bw()
+```
+
+Although the distinction would not be easy to make if the dots were colored differently, the cuts are still pretty clean compared to the first plots where we had used all dimensions. 
+
+## **Task 3**
+
+### In this exercise you will perform PCA on 40 observations of 1000 variables. This is very different from what you are used to: there are much more variables than observations! These are measurments of genes of tissues of healthy and diseased patients: the first 20 observations are coming from healthy and the others from diseased patients.
+
+```{r, results='hide', message=FALSE}
+data <- fread("./data/gene_data_from_ISLR_ch_10/gene_data.csv")
+data[, is_diseased := factor(is_diseased)]
+dim(data)
+tail(names(data))
+```
+
+### a) Perform PCA on this data with scaling features.
+
+```{r}
+data_features <- copy(data)
+data_features[, is_diseased := NULL]
+
+pca_result <- prcomp(data_features, scale. = TRUE)
+
+# fviz_pca(pca_result)
+# wow that looks simple doesn't it
+
+# let's check the variance importance plots
+variances <- pca_result$sdev^2
+total_variance <- sum(variances)
+share_variance_by_component <- variances / total_variance
+dt_variance <- data.table(component = 1:length(variances),
+                          share_variance = share_variance_by_component)
+dt_variance[, cum_share_variance := cumsum(share_variance)]
+```
+
+
+```{r}
+ggplot(data = melt(dt_variance, id.vars = "component")) +
+  geom_line(aes(x = component, y = value, color = variable)) +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme(legend.position = "bottom") +
+  theme_bw()
+```
+
+It seems that after scaling, the first 40 variables capture the total variance of the 40 variables - unsurprisingly. It doesn't seem like the first to components will give us a thorough picture of the complete situation but they appear a lot more important than others. 
+
+### b) Visualize datapoints in the space of the first two principal components (look at the fviz_pca_ind function). What do you see in the figure?
+
+```{r}
+fviz_pca_ind(pca_result, col.ind="cos2", geom = "point") +
+  theme_bw()
+```
+
+There appears to be a large gap between the two sides of the plot - it's almost like when we had two very clearly defined clusters, which sound about right if we think about the fact that these dots are patients. Although we got rid of the factor indicating whether a patient was healthy or not, it seems that the first two principal components already give us a hint on the number of groups involved. But which group is which?
+
+
+### c) Which individual features can matter the most in separating diseased from healthy? A strategy to answer this can be the following:
+### - we see that PC1 matters a lot 
+### - so look at which features have high loadings for the first PC, that is, the largest coordinates (in absolute terms). (Hint: use the $rotation). Choose the two features with the largest coordinates and plot observations in the coordinate system defined by these two original features. What do you see?
+
+```{r}
+# let's check which features are the 10 most important contributors of PC1
+pc1 <- abs(pca_result$rotation[,1])
+pc1[order(-pc1)[1:10]]
+```
+
+```{r}
+# we can double check with a plot
+fviz_contrib(pca_result, "var", axes = 1, top = 10)
+
+ggplot(data, aes(measure_502, measure_589)) +
+  geom_point() +
+  geom_smooth(method = "lm", se= F) +
+  theme_bw()
+```
+
+The two most important variables in PC1 show a clear positive correlation with each other - if someone has a higher value for 502 they will have a higher one for 589 as well. This is a very useful takeaway given that we have 1000 variables in total, but with the help of PCA we could narrow our search down to two key factors. 
+
+
+### PCA thus offers a way to summarize vast amounts of variables in a handful of dimensions. This can serve as a tool to pick interesting variables where, for example, visual inspection would be hopeless.
+
