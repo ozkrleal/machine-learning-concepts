@@ -1,0 +1,81 @@
+---
+title: "Homework 1 - Data Science 3"
+author: 'Oscar Leal - ID: 1903161'
+date: "3/3/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+library(data.table)
+library(magrittr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(xgboost)
+library(ranger)
+library(gbm)
+library(ISLR)
+library(skimr)
+library(ROCR)
+```
+
+## 1. Tree ensemble models (7 points)
+
+In this problem you are going to work with the OJ dataset from the ISLR package. This dataset records purchases of two types of orange juices and presents customer and product characteristics as features. The goal is to predict which of the juices is chosen in a given purchase situation. See ?ISLR::OJ for a description of the variables.
+
+```{r}
+data <- data.table(OJ)
+skim(data)
+summary(data)
+```
+
+### Create a training data of 75% and keep 25% of the data as a test set. Train a decision tree as a benchmark model. Plot the final model and interpret the result.
+
+```{r}
+training_ratio <- 0.75 
+set.seed(1234)
+train_indices <- createDataPartition(
+  y = data[["Purchase"]],
+  times = 1,
+  p = training_ratio,
+  list = FALSE
+)
+
+data_train <- data[train_indices, ]
+data_test <- data[-train_indices, ]
+
+set.seed(123)
+
+train_control <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3
+)
+
+simple_tree_model <- train(Purchase ~ .,
+                      method = "rpart",
+                      data = data_train,
+                      tuneGrid = data.frame(cp = c(0.01, 0.02, 0.05)),
+                      trControl = train_control)
+simple_tree_model
+```
+
+```{r}
+rpart.plot(simple_tree_model[["finalModel"]])
+```
+
+### Investigate tree ensemble models: random forest, gradient boosting machine, XGBoost. Try various tuning parameter combinations and select the best model using cross-validation.
+
+
+
+### Compare different models with the resamples function (make sure to set the same seed before model training for all 3 models). Is any of these giving significantly different predictive power than the others?
+
+### Choose the best model and plot ROC curve for the best model on the test set. Calculate and interpret AUC.
+
+### Inspect variable importance plots for the 3 models. Are similar variables found to be the most important for the 3 models?
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
