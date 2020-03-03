@@ -6,10 +6,9 @@ output:
   prettydoc::html_pretty:
     highlight: github
     theme: cayman
-  html_document:
-    df_print: paged
 ---
 ## **Task 1**
+
 ```{r, echo = FALSE, include = FALSE}
 library(data.table)
 library(datasets)
@@ -38,8 +37,10 @@ The goal will be to predict the logarithm of the property value: logTotalValue.
 
 ```{r}
 # more info about the data here: https://www1.nyc.gov/site/planning/data-maps/open-data/dwn-pluto-mappluto.page
+
 data <- readRDS(url('http://www.jaredlander.com/data/manhattan_Train.rds')) %>% 
   as.data.table()
+
 #data[, logBuiltFAR := log(BuiltFAR)]
 #data[, logLotFront := log(LotFront)]
 #data[, logNumFloors := log(NumFloors)]
@@ -581,13 +582,13 @@ df_w_clusters <- cbind(df,
 
 # and plot it
 ggplot(df_w_clusters, 
-       aes(x = UrbanPop, y = Assault, color = cluster)) + 
+       aes(x = UrbanPop, y = Murder, color = cluster)) + 
   geom_point() +
   theme_bw()
 
 ```
 
-When we plot UrbanPop against Assault we can see that the two clusters are somewhat overlapping - I wouldn't be able to draw the cluster borders like this by looking at the scatterplot. 
+When we plot UrbanPop against Murder we can see that the two clusters are somewhat overlapping - I wouldn't be able to draw the cluster borders like this by looking at the scatterplot. 
 
 ```{r}
 # let's add center marks to the plot by extracting center values from the k-means results
