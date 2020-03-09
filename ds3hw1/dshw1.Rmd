@@ -21,6 +21,7 @@ library(gbm)
 library(ISLR)
 library(skimr)
 library(ROCR)
+library(tidyverse)
 ```
 
 ## 1. Tree ensemble models (7 points)
@@ -70,12 +71,125 @@ rpart.plot(simple_tree_model[["finalModel"]])
 
 ### Investigate tree ensemble models: random forest, gradient boosting machine, XGBoost. Try various tuning parameter combinations and select the best model using cross-validation.
 
+## Random Forest
+
+```{r}
+tune_grid <- expand.grid(
+  .mtry = c(2, 3, 5, 7, 9, 12, 14),
+  .splitrule = "gini",
+  .min.node.size = c(5, 10)
+)
+
+# random forest
+set.seed(1234)
+rf_model <- train(Purchase ~ .,
+                  method = "ranger",
+                  data = data_train,
+                  trControl = train_control,
+                  tuneGrid = tune_grid,
+                  importance = "impurity"
+                  )
+rf_model
+```
+
+## GBM
+
+```{r}
+gbm_grid <- expand.grid(n.trees = c(100, 500, 1000), 
+                        interaction.depth = c(2, 3, 5), 
+                        shrinkage = c(0.005, 0.01, 0.1),
+                        n.minobsinnode = c(1))
+set.seed(1234)
+gbm_model <- train(Purchase ~ .,
+                   method = "gbm",
+                   data = data_train,
+                   trControl = train_control,
+                   tuneGrid = gbm_grid,
+                   verbose = FALSE # gbm by default prints too much output
+                   )
+gbm_model
+```
+
+# Refining GBM with values from optimal model
+
+```{r}
+# we can refine the grid around the optimum found
+gbm_grid_refined <- expand.grid(
+  n.trees = c(500, 1000, 1800), 
+  interaction.depth = c(2, 3, 5), 
+  shrinkage = c(0.0025, 0.005, 0.01, 0.02),
+  n.minobsinnode = c(1)
+)
+
+set.seed(1234)
+gbm_model_refined <- train(Purchase ~ .,
+                   method = "gbm",
+                   data = data_train,
+                   trControl = train_control,
+                   tuneGrid = gbm_grid_refined,
+                   verbose = FALSE # gbm by default prints too much output
+                   )
+gbm_model_refined
+```
+
+## XGBoost
+
+```{r}
+xgb_grid <- expand.grid(nrounds = c(500, 1000),
+                       max_depth = c(2, 3, 5),
+                       eta = c(0.01, 0.05),
+                       gamma = 0,
+                       colsample_bytree = c(0.5, 0.7),
+                       min_child_weight = 1, # similar to n.minobsinnode
+                       subsample = c(0.5))
+set.seed(1234)
+xgboost_model <- train(Purchase ~ .,
+                       method = "xgbTree",
+                       data = data_train,
+                       trControl = train_control,
+                       tuneGrid = xgb_grid)
+xgboost_model
+```
 
 
 ### Compare different models with the resamples function (make sure to set the same seed before model training for all 3 models). Is any of these giving significantly different predictive power than the others?
 
+```{r}
+resamples_object <- resamples(list("rpart" = simple_tree_model,
+                                   "rf" = rf_model,
+                                   "gbm" = gbm_model_refined,
+                                   "xgboost" = xgboost_model))
+summary(resamples_object)
+
+```
+
 ### Choose the best model and plot ROC curve for the best model on the test set. Calculate and interpret AUC.
+
+```{r}
+library(PRROC)
+
+data_test_prediction <- data_test %>% mutate(prediction = predict(xgboost_model, data_test))
+
+
+PRROC_obj <- roc.curve(scores.class0 = data_test_prediction$prediction, weights.class0=data_test_prediction$labels,
+                       curve=TRUE)
+plot(PRROC_obj)
+
+```
 
 ### Inspect variable importance plots for the 3 models. Are similar variables found to be the most important for the 3 models?
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+plot(varImp(rf_model))
+```
+
+```{r}
+plot(varImp(gbm_model_refined))
+```
+
+```{r}
+plot(varImp(xgboost_model))
+```
+
+
+
