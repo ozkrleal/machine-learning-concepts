@@ -191,5 +191,22 @@ plot(varImp(gbm_model_refined))
 plot(varImp(xgboost_model))
 ```
 
+## 2. Variable importance profiles (6 points)
+
+Use the Hitters dataset and predict log_salary just like we did it in class.
+
+```{r}
+data <- data.table(Hitters)
+data <- data[!is.na(Salary)]
+data[, log_salary := log(Salary)]
+data[, Salary := NULL]
+
+```
+
+### Train two random forest models: one with mtry = 2 and another with mtry = 10 (use the whole dataset and don’t use cross-validation). Inspect variable importance profiles. What do you see in terms of how important the first few variables are relative to each other?
+
+### One of them is more extreme in terms of how the most important and the next ones relate to each other. Give an intuitive explanation how mtry relates to relative importance of variables in random forest models.
+
+### In the same vein, estimate two gbm models and set bag.fraction to 0.1 first and to 0.9 in the second. The tuneGrid should consist of the same values for the two models (a dataframe with one row): n.trees = 500, interaction.depth = 5, shrinkage = 0.1, n.minobsinnode = 5. Compare variable importance plots for the two models. What is the meaning of bag.fraction? Based on this, why is one variable importance profile more extreme than the other?
 
 
