@@ -1,0 +1,242 @@
+---
+title: "Homework 1 - Data Science 3 - Exercise 3"
+author: "Oscar Leal 1903161"
+date: "3/9/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(data.table)
+library(magrittr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(xgboost)
+library(ranger)
+library(gbm)
+library(ISLR)
+library(skimr)
+library(ROCR)
+library(tidyverse)
+```
+
+## 3. Stacking (10 points)
+
+In this problem you are going to predict whether patients actually show up for their medical appointments. The dataset was shared on Kaggle.
+
+```{r}
+data <- fread("../../machine-learning-course/data/medical-appointments-no-show/no-show-data.csv")
+
+# some data cleaning
+data[, c("PatientId", "AppointmentID", "Neighbourhood") := NULL]
+setnames(data, 
+         c("No-show", 
+           "Age", 
+           "Gender",
+           "ScheduledDay", 
+           "AppointmentDay",
+           "Scholarship",
+           "Hipertension",
+           "Diabetes",
+           "Alcoholism",
+           "Handcap",
+           "SMS_received"), 
+         c("no_show", 
+           "age", 
+           "gender", 
+           "scheduled_day", 
+           "appointment_day",
+           "scholarship",
+           "hypertension",
+           "diabetes",
+           "alcoholism",
+           "handicap",
+           "sms_received"))
+
+# for binary prediction, the target variable must be a factor
+data[, no_show := factor(no_show, levels = c("Yes", "No"))]
+data[, handicap := ifelse(handicap > 0, 1, 0)]
+
+# create new variables
+data[, gender := factor(gender)]
+data[, scholarship := factor(scholarship)]
+data[, hypertension := factor(hypertension)]
+data[, alcoholism := factor(alcoholism)]
+data[, handicap := factor(handicap)]
+
+data[, scheduled_day := as.Date(scheduled_day)]
+data[, appointment_day := as.Date(appointment_day)]
+data[, days_since_scheduled := as.integer(appointment_day - scheduled_day)]
+
+# clean up a little bit
+data <- data[age %between% c(0, 95)]
+data <- data[days_since_scheduled > -1]
+data[, c("scheduled_day", "appointment_day", "sms_received") := NULL]
+```
+
+```{r}
+library(h2o)
+h2o.init()
+data <- as.h2o(data)
+```
+
+## Create train / validation / test sets, cutting the data into 5% - 45% - 50% parts.
+
+```{r}
+splitted_data <- h2o.splitFrame(data, 
+                                ratios = c(0.05, 0.45),
+                                seed = 123)
+data_train <- splitted_data[[1]]
+data_valid <- splitted_data[[2]]
+data_test <- splitted_data[[3]]
+```
+
+## Train a benchmark model of your choice using h2o (such as random forest, gbm or glm) and evaluate it on the validation set.
+
+```{r}
+y <- "no_show"
+X <- setdiff(names(data_train), y)
+
+gbm_model <- h2o.gbm(
+  X, y,
+  training_frame = data_train,
+  ntrees = 200, 
+  max_depth = 10, 
+  learn_rate = 0.1, 
+  seed = 1234,
+  nfolds = 5, 
+  keep_cross_validation_predictions = TRUE
+)
+```
+
+Validation performance: 
+
+```{r}
+h2o.rmse(h2o.performance(gbm_model, newdata = data_valid))
+```
+
+## Build at least 4 models of different families using cross validation, keeping cross validated predictions. One of the model families must be deeplearning (you can try, for example, different network topologies).
+
+```{r}
+glm_model <- h2o.glm(
+  X, y,
+  training_frame = data_train,
+  family = "binomial",
+  alpha = 1, 
+  lambda_search = TRUE,
+  seed = 1234,
+  nfolds = 5, 
+  keep_cross_validation_predictions = TRUE  # this is necessary to perform later stacking
+)
+```
+
+```{r}
+gbm_model2 <- h2o.gbm(
+  X, y,
+  training_frame = data_train,
+  ntrees = 250, 
+  max_depth = 8, 
+  learn_rate = 0.1, 
+  seed = 1234,
+  nfolds = 5, 
+  keep_cross_validation_predictions = TRUE
+)
+```
+
+```{r}
+deeplearning_model <- h2o.deeplearning(
+  X, y,
+  training_frame = data_train,
+  hidden = c(32, 8),
+  seed = 1234,
+  nfolds = 5, 
+  reproducible = TRUE,
+  keep_cross_validation_predictions = TRUE
+)
+```
+
+```{r}
+deeplearning_model2 <- h2o.deeplearning(
+  X, y,
+  training_frame = data_train,
+  hidden = c(40, 6, 3),
+  seed = 1234,
+  epochs = 10,
+  nfolds = 5, 
+  reproducible = TRUE,
+  keep_cross_validation_predictions = TRUE
+)
+```
+
+## Evaluate validation set performance of each model.
+```{r}
+# predict on validation set
+validation_performances <- list(
+  "glm" = h2o.rmse(h2o.performance(glm_model, newdata = data_valid)),
+  "gbm" = h2o.rmse(h2o.performance(gbm_model, newdata = data_valid)),
+  "dl 2 hidden layers" = h2o.rmse(h2o.performance(deeplearning_model, newdata = data_valid)),
+  "dl 3 hidden layers" = h2o.rmse(h2o.performance(deeplearning_model2, newdata = data_valid))
+)
+
+validation_performances
+```
+
+## How large are the correlations of predicted scores of the validation set produced by the base learners?
+
+GLM and GBM performed similar (.3945 and .3961). 
+
+For the deep learning models, they performed better than GLM and GBM, and they also performed similar between them (.3866, .3855)
+
+## Create a stacked ensemble model from the base learners. Experiment with at least two different ensembling meta learners.
+
+```{r}
+ensemble_model_gbm <- h2o.stackedEnsemble(
+  X, y,
+  training_frame = data_train,
+  metalearner_algorithm = "gbm",
+  base_models = list(glm_model, 
+                     gbm_model,
+                     deeplearning_model,
+                     deeplearning_model2))
+```
+
+```{r}
+ensemble_model_glm <- h2o.stackedEnsemble(
+  X, y,
+  training_frame = data_train,
+  metalearner_algorithm = "glm",
+  base_models = list(glm_model, 
+                     gbm_model,
+                    deeplearning_model2))
+```
+
+## Evaluate ensembles on validation set. Did it improve prediction?
+
+```{r}
+print(h2o.rmse(h2o.performance(ensemble_model_gbm, newdata = data_valid)))
+```
+
+```{r}
+print(h2o.rmse(h2o.performance(ensemble_model_glm, newdata = data_valid)))
+```
+
+Seems like the second ensemble model with meta learning base glm is the best performing of the stacks, but the deeplearning model with 3 hidden layers is performing slightly better on the validation set.
+
+## Evaluate the best performing model on the test set. How does performance compare to that of the validation set?
+
+Evaluating the best ensemble
+```{r}
+print(h2o.rmse(h2o.performance(ensemble_model_glm, newdata = data_test)))
+```
+
+Performed slightly worse, but not a significant difference.
+
+```{r}
+print(h2o.rmse(h2o.performance(deeplearning_model2, newdata = data_test)))
+```
+
+Evaluating the 3 hidden layer deep learning model, it is performing slightly better, but not a significant difference. Would still go for the raw deep learning model though!

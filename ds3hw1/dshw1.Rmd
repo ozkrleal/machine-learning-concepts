@@ -1,5 +1,5 @@
 ---
-title: "Homework 1 - Data Science 3"
+title: "Homework 1 - Data Science 3 - Exercise 1"
 author: 'Oscar Leal - ID: 1903161'
 date: "3/3/2020"
 output: html_document
@@ -32,6 +32,8 @@ In this problem you are going to work with the OJ dataset from the ISLR package.
 data <- data.table(OJ)
 skim(data)
 summary(data)
+#making binary variable
+data$Store7 <- ifelse(data$Store7 == "Yes", 1, 0)
 ```
 
 ### Create a training data of 75% and keep 25% of the data as a test set. Train a decision tree as a benchmark model. Plot the final model and interpret the result.
@@ -51,6 +53,7 @@ data_test <- data[-train_indices, ]
 
 set.seed(123)
 
+# we will use repeated cv instead of cv
 train_control <- trainControl(
   method = "repeatedcv",
   number = 5,
@@ -117,7 +120,7 @@ gbm_model
 gbm_grid_refined <- expand.grid(
   n.trees = c(500, 1000, 1800), 
   interaction.depth = c(2, 3, 5), 
-  shrinkage = c(0.0025, 0.005, 0.01, 0.02),
+  shrinkage = c(0.0025, 0.005, 0.01),
   n.minobsinnode = c(1)
 )
 
@@ -163,19 +166,47 @@ summary(resamples_object)
 
 ```
 
+The best performing model was xgboost, but not for a huge difference.
+
+
 ### Choose the best model and plot ROC curve for the best model on the test set. Calculate and interpret AUC.
 
 ```{r}
-library(PRROC)
+# get probabilities instead of classes
+test_prediction_probs <- predict.train(xgboost_model, 
+                                       newdata = data_test, 
+                                       type = "prob")
 
-data_test_prediction <- data_test %>% mutate(prediction = predict(xgboost_model, data_test))
+# ROC
+xgb_prediction <- prediction(test_prediction_probs$MM,
+                              data_test[["Purchase"]])
 
+xgb_perf <- performance(xgb_prediction, measure = "tpr", x.measure = "fpr")
 
-PRROC_obj <- roc.curve(scores.class0 = data_test_prediction$prediction, weights.class0=data_test_prediction$labels,
-                       curve=TRUE)
-plot(PRROC_obj)
+# create df for roc curve
+xgb_roc_df <- data.table(
+  model = "xgboost",
+  FPR = xgb_perf@x.values[[1]],
+  TPR = xgb_perf@y.values[[1]],
+  cutoff = xgb_perf@alpha.values[[1]]
+)
 
+ggplot(xgb_roc_df) +
+  geom_line(aes(FPR, TPR, color = cutoff), size = 2) +
+  geom_ribbon(aes(FPR, ymin = 0, ymax = TPR), fill = "blue", alpha = 0.1) +
+  geom_abline(intercept = 0, slope = 1,  linetype = "dotted", col = "black") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, .1)) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, .1)) +
+  xlab("False Positive Rate") + ylab("True Positive Rate") 
 ```
+
+```{r}
+# AUC
+AUC <- performance(xgb_prediction, "auc")@y.values[[1]]
+print(AUC)
+```
+
+This value tells how much a model is capable of distinguishing between the classes. AUC has a very practical interpretation, it is the probability (89.4%) of correct ranking of a random positive negative pair.
 
 ### Inspect variable importance plots for the 3 models. Are similar variables found to be the most important for the 3 models?
 
@@ -191,22 +222,7 @@ plot(varImp(gbm_model_refined))
 plot(varImp(xgboost_model))
 ```
 
-## 2. Variable importance profiles (6 points)
 
-Use the Hitters dataset and predict log_salary just like we did it in class.
+Variable importance are pretty similar for the three models. The most important variables are LoyalCH which states if someone is loyal to the CH brand, the PriceDiff, and the StoreID. 
 
-```{r}
-data <- data.table(Hitters)
-data <- data[!is.na(Salary)]
-data[, log_salary := log(Salary)]
-data[, Salary := NULL]
-
-```
-
-### Train two random forest models: one with mtry = 2 and another with mtry = 10 (use the whole dataset and don’t use cross-validation). Inspect variable importance profiles. What do you see in terms of how important the first few variables are relative to each other?
-
-### One of them is more extreme in terms of how the most important and the next ones relate to each other. Give an intuitive explanation how mtry relates to relative importance of variables in random forest models.
-
-### In the same vein, estimate two gbm models and set bag.fraction to 0.1 first and to 0.9 in the second. The tuneGrid should consist of the same values for the two models (a dataframe with one row): n.trees = 500, interaction.depth = 5, shrinkage = 0.1, n.minobsinnode = 5. Compare variable importance plots for the two models. What is the meaning of bag.fraction? Based on this, why is one variable importance profile more extreme than the other?
-
-
+Surprisingly, GBM even noted WeekofPurchase as an important variable.

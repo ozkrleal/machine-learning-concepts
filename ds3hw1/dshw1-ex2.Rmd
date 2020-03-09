@@ -1,0 +1,140 @@
+---
+title: "Homework 1 - Data Science 3 - Exercise 2"
+author: "Oscar Leal 1903161"
+date: "3/9/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, include = FALSE}
+library(data.table)
+library(magrittr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(xgboost)
+library(ranger)
+library(gbm)
+library(ISLR)
+library(skimr)
+library(ROCR)
+library(tidyverse)
+```
+
+## 1. Tree ensemble models (7 points)
+
+```{r}
+data <- data.table(Hitters)
+data <- data[!is.na(Salary)]
+data[, log_salary := log(Salary)]
+data[, Salary := NULL]
+```
+
+
+### Train two random forest models: one with mtry = 2 and another with mtry = 10 (use the whole dataset and don’t use cross-validation). Inspect variable importance profiles. What do you see in terms of how important the first few variables are relative to each other?
+
+```{r}
+# mtry = 2
+tune_grid <- expand.grid(
+  .mtry = 2,
+  .splitrule = "variance",
+  .min.node.size = c(5,7,10,12)
+)
+
+# run first model
+set.seed(1234)
+rf_mod1 <- train(log_salary ~ .,
+                  method = "ranger",
+                  data = data,
+                  tuneGrid = tune_grid,
+                  importance = "impurity"
+                  )
+rf_mod1
+
+```
+
+```{r}
+plot(varImp(rf_mod1))
+```
+
+```{r}
+#mtry 10
+tune_grid2 <- expand.grid(
+  .mtry = 10,
+  .splitrule = "variance",
+  .min.node.size = c(5,7,10)
+)
+
+# run second model
+set.seed(1234)
+rf_mod2 <- train(log_salary ~ .,
+                  method = "ranger",
+                  data = data,
+                  tuneGrid = tune_grid2,
+                  importance = "impurity"
+                  )
+rf_mod2
+```
+
+```{r}
+plot(varImp(rf_mod2))
+```
+
+With mtry 2 it seems that the high (after the first one) importance variables have higher impact.
+
+And when we try wih mtry 10, it seems that all of the rest except the first one are less significant.
+
+### One of them is more extreme in terms of how the most important and the next ones relate to each other. Give an intuitive explanation how mtry relates to relative importance of variables in random forest models.
+
+It seems that if there's a higher mtry, the model will choose more accurately between the chosen variables which are the most important.
+
+### In the same vein, estimate two gbm models and set bag.fraction to 0.1 first and to 0.9 in the second. The tuneGrid should consist of the same values for the two models (a dataframe with one row): n.trees = 500, interaction.depth = 5, shrinkage = 0.1, n.minobsinnode = 5. Compare variable importance plots for the two models. What is the meaning of bag.fraction? Based on this, why is one variable importance profile more extreme than the other?
+
+```{r}
+# set up tuning params that will be used for both models
+gbm_grid <- expand.grid(n.trees = 500, 
+                        interaction.depth = 5, 
+                        shrinkage = 0.1,
+                        n.minobsinnode = 5)
+
+# first model
+set.seed(5643)
+gbm1 <- train(log_salary ~ .,
+                   method = "gbm",
+                   data = data,
+                   tuneGrid = gbm_grid,
+                   bag.fraction = 0.1,
+                   verbose = FALSE
+                   )
+gbm1
+```
+
+```{r}
+plot(varImp(gbm1))
+
+```
+
+```{r}
+# second model
+set.seed(5643)
+gbm2 <- train(log_salary ~ .,
+                   method = "gbm",
+                   data = data,
+                   tuneGrid = gbm_grid,
+                   bag.fraction = 0.9,
+                   verbose = FALSE
+                   )
+gbm2
+```
+
+```{r}
+plot(varImp(gbm2))
+```
+
+With gbm it can be concluded that the bag.fraction behaves like mtry but in an opposite way, the higher the fraction in the model, the less it will tend to take more variables as important.
+
+The higher the variable importances of the model, the more variables it has to choose to estimate the importance of each individual case.
